@@ -1,0 +1,231 @@
+pipeline {
+    agent any
+
+    environment {
+        DEPLOYMENT = "${env.WORKSPACE}/primenet"
+        SCRIPTS = "${env.WORKSPACE}/jenkins/deploy/qa/scripts"
+        TEMP = "${env.WORKSPACE}/jenkins/deploy/qa/temp"
+        BUILD_NO = "${env.BUILD_NUMBER}"
+        TEAMS_WEBHOOK_URL = "https://xformicsindia.webhook.office.com/webhookb2/adbdb5f3-b8db-4387-86ac-67802ecfb1d4@b59b5c3c-a4d9-4fbe-ad5f-130f21b2d42c/IncomingWebhook/ca91b77b68b44c318ce270c31db894c7/7ed4e4e3-33b7-4ea5-80a7-55c528820a6f/V2rZ1Fkzhke0keALBv_j2depkFzpakf6y0V3H1fwvhR4U1"
+    }
+
+    parameters {
+      choice name: 'MASTER_DATA_LOAD_REQUIRED', choices: ['NO', 'YES'], description: 'Is schema changes, master data load for post service, notification service and user service required for QA database?'
+      booleanParam(name: 'BUILD_KEYCLOAK', defaultValue: false, description: 'Build Keycloak')
+      booleanParam(name: 'BUILD_FRONTEND', defaultValue: false, description: 'Build Frontend')
+      booleanParam(name: 'BUILD_EUREKA', defaultValue: false, description: 'Build Eureka Server')
+      booleanParam(name: 'BUILD_API_GATEWAY', defaultValue: false, description: 'Build API Gateway')
+      booleanParam(name: 'BUILD_USER_SERVICE', defaultValue: false, description: 'Build User Service')
+      booleanParam(name: 'BUILD_POST_SERVICE', defaultValue: false, description: 'Build Post Service')
+      booleanParam(name: 'BUILD_NOTIFICATION_SERVICE', defaultValue: false, description: 'Build Notification Service')
+      booleanParam(name: 'BUILD_EXCEPTION_SERVICE', defaultValue: false, description: 'Build Exception Service')
+    }
+
+    tools {
+        nodejs "nodeJs-22.9.0"
+        gradle "gradle-8.4"
+    }
+
+    stages {
+
+        stage('Build Keycloak') {
+        when {
+                expression { params.BUILD_KEYCLOAK }
+                    }
+            steps {
+                script {
+                    dir("${DEPLOYMENT}") {
+                        withCredentials([string(credentialsId: 'QA_DB_URL', variable: 'QA_DB_URL')]) {
+                            sh 'chmod +x ops.sh'
+                            sh """export QA_DB_URL=${env.QA_DB_URL}"""
+                            sh './ops.sh checkout qa keycloak'
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Build Frontend') {
+        when {
+                        expression { params.BUILD_FRONTEND }
+                    }
+            steps {
+                script {
+                    dir("${DEPLOYMENT}") {
+                        sh 'chmod +x ops.sh'
+                        sh './ops.sh checkout qa frontend'
+                    }
+                }
+            }
+        }
+
+        stage('Build Eureka Server') {
+        when {
+                        expression { params.BUILD_EUREKA }
+                    }
+            steps {
+                script {
+                    dir("${DEPLOYMENT}") {
+                        sh 'chmod +x ops.sh'
+                        sh './ops.sh checkout qa spring eureka-server'
+                    }
+                }
+            }
+        }
+
+        stage('Build API Gateway') {
+        when {
+                        expression { params.BUILD_API_GATEWAY }
+                    }
+            steps {
+                script {
+                    dir("${DEPLOYMENT}") {
+                        sh 'chmod +x ops.sh'
+                        sh './ops.sh checkout qa spring api-gateway'
+                    }
+                }
+            }
+        }
+
+        stage('Build User service') {
+        when {
+                        expression { params.BUILD_USER_SERVICE }
+                    }
+            steps {
+                script {
+                    dir("${DEPLOYMENT}") {
+                        sh 'chmod +x ops.sh'
+                        sh './ops.sh checkout qa spring user-service'
+                    }
+                }
+            }
+        }
+
+        stage('Build Post Service') {
+        when {
+                        expression { params.BUILD_POST_SERVICE }
+                    }
+            steps {
+                script {
+                    dir("${DEPLOYMENT}") {
+                        sh 'chmod +x ops.sh'
+                        sh './ops.sh checkout qa spring post-service'
+                    }
+                }
+            }
+        }
+
+        stage('Build Notification Service') {
+        when {
+                        expression { params.BUILD_NOTIFICATION_SERVICE }
+                    }
+            steps {
+                script {
+                    dir("${DEPLOYMENT}") {
+                        sh 'chmod +x ops.sh'
+                        sh './ops.sh checkout qa spring notification-service'
+                    }
+                }
+            }
+        }
+
+        stage('Build Exception Service') {
+        when {
+                        expression { params.BUILD_EXCEPTION_SERVICE }
+                    }
+            steps {
+                script {
+                    dir("${DEPLOYMENT}") {
+                        sh 'chmod +x ops.sh'
+                        sh './ops.sh checkout qa spring exception-service'
+                    }
+                }
+            }
+        }
+
+        stage('Re-tag images') {
+            steps {
+                script {
+                    echo 'Retag the images'
+                    dir("${SCRIPTS}") {
+                        sh 'chmod +x retag.sh'
+                        sh 'mkdir -p ../temp'
+                        sh './retag.sh development qa ${DEPLOYMENT} ${TEMP} ${BUILD_NO}'
+                    }
+                }
+            }
+        }
+
+        stage('Push images to ECR') {
+            steps {
+                script {
+                    echo 'Logging into the AWS ECR'
+                    dir("${SCRIPTS}") {
+                        sh 'aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 552694311615.dkr.ecr.us-east-1.amazonaws.com'
+                        sh 'chmod +x imagePush.sh'
+                        sh './imagePush.sh ${TEMP}'
+                    }
+                }
+            }
+        }
+
+        stage('Update database') {
+            when {
+                expression { params.MASTER_DATA_LOAD_REQUIRED == 'YES' }
+            }
+            steps {
+                script {
+                    dir("${DEPLOYMENT}") {
+                        sh 'chmod +x ops.sh'
+                        sh './ops.sh checkout qa postgres'
+                    }
+                    dir("${SCRIPTS}") {
+                        withCredentials([string(credentialsId: 'QA_DB_PASSWORD', variable: 'QA_DB_PASSWORD'),
+                                            string(credentialsId: 'QA_DB_HOST', variable: 'QA_DB_HOST')]) {
+                            sh 'chmod +x updateDatabase.sh'
+                            sh """
+                            export QA_DB_PASSWORD=${env.QA_DB_PASSWORD}
+                            export QA_DB_HOST=${env.QA_DB_HOST}
+                            """
+                            sh """./updateDatabase.sh ${DEPLOYMENT}"""
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Stop tasks') {
+            steps {
+                script {
+                    echo 'Stopping the tasks'
+                    dir("${SCRIPTS}") {
+                        sh 'chmod +x stopTask.sh'
+                        sh './stopTask.sh ${TEMP}'
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            script {
+                echo 'Cleanup temp files and images related to current build'
+                dir("${SCRIPTS}") {
+                    sh 'sleep 30'
+                    sh 'chmod +x cleanup.sh'
+                    sh './cleanup.sh ${TEMP}'
+                }
+                cleanWs()
+            }
+        }
+        success {
+            sh 'sleep 180'
+            office365ConnectorSend message: 'Application successfully deployed on AWS, QA environment is up!', webhookUrl: "${env.TEAMS_WEBHOOK_URL}", status: 'Success'
+            echo 'Notification sent to Microsoft teams with office365Connector webhook'
+            build job: 'primenet-ui-automation', wait: false, parameters: [
+                string(name: 'BRANCH_NAME', value: "development"),
+            ]
+        }
+    }
+}
